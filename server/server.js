@@ -1,9 +1,10 @@
-const express = require("express");
-const http = require("http");
-const { Server } = require("socket.io");
+
+import express from "express";
+import { createServer } from "node:http";
+import { Server } from "socket.io";
 
 const app = express();
-const server = http.createServer(app);
+const server = createServer(app);
 
 const io = new Server(server, {
   cors: {
@@ -33,6 +34,7 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3000;
 
-server.listen(PORT, () => {
-  console.log(`Servidor activo en puerto ${PORT}`);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor activo en puerto ${POR
+                                           T}`);
 });
