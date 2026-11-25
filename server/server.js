@@ -1,5 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import express from "express";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
@@ -60,8 +62,10 @@ function leaveCurrentRoom(socket) {
   }
 }
 
+app.use(express.static(path.resolve(__dirname, "../dist")));
+
 app.get("/", (req, res) => {
-  res.send("Padel Retro Online - Servidor activo 🎾");
+  res.sendFile(path.resolve(__dirname, "../dist/index.html"));
 });
 
 app.get("/health", (req, res) => {
