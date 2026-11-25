@@ -1,13 +1,8 @@
 
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import express from "express";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { randomInt } from "node:crypto";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = createServer(app);
@@ -19,354 +14,216 @@ const io = new Server(server, {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-const MAX_PLAYERS = 4;
-const TICK_RATE = 30;
 const rooms = new Map();
-const CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-const COURT = {
-  width: 1000,
-  height: 600
-};
-
-function generateRoomCode() {
-  let code;
-  do {
-    code = Array.from(
-      { length: 5 },
-      () => CHARACTERS[randomInt(CHARACTERS.length)]
-    ).join("");
-  } while (rooms.has(code));
-
-  return code;
-}
-
-function createBall() {
-  return {
-    x: 500,
-    y: 300,
-    vx: Math.random() > 0.5 ? 260 : -260,
-    vy: Math.random() > 0.5 ? 150 : -150,
-    radius: 10
-  };
-}
-
-function getRoomPlayers(room) {
-  return Array.from(room.players.values()).map(player => ({
-    id: player.id,
-    slot: player.slot,
-    team: player.team,
-    x: player.x,
-    y: player.y
-  }));
-}
-
-function getRoomResult(code, room) {
-  return {
-    ok: true,
-    code,
-    players: getRoomPlayers(room),
-    count: room.players.size,
-    maxPlayers: MAX_PLAYERS,
-    started: room.started
-  };
-}
-
-function resetGame(room) {
-  room.ball = createBall();
-  room.score = [0, 0];
-
-  for (const player of room.players.values()) {
-    player.input = { x: 0, y: 0 };
-  }
-}
-
-function leaveCurrentRoom(socket) {
-  const code = socket.data.roomCode;
-  if (!code) return;
-
-  const room = rooms.get(code);
-  socket.data.roomCode = null;
-  socket.leave(code);
-
-  if (!room) return;
-
-  room.players.delete(socket.id);
-  room.started = false;
-
-  if (room.players.size === 0) {
-    rooms.delete(code);
-    return;
-  }
-
-  resetGame(room);
-
-  io.to(code).emit("room-updated", {
-    ...getRoomResult(code, room),
-    message: "Un jugador ha salido. Esperando otro jugador."
-  });
-}
-
-function addPlayer(socket, room, code) {
-  const slot = room.players.size;
-
-  const positions = [
-    { x: 180, y: 200 },
-    { x: 330, y: 400 },
-    { x: 820, y: 200 },
-    { x: 670, y: 400 }
-  ];
-
-  const position = positions[slot];
-
-  room.players.set(socket.id, {
-    id: socket.id,
-    slot,
-    team: slot < 2 ? "blue" : "red",
-    x: position.x,
-    y: position.y,
-    input: { x: 0, y: 0 },
-    lastHit: 0
-  });
-
-  socket.join(code);
-  socket.data.roomCode = code;
-
-  if (room.players.size === MAX_PLAYERS) {
-    room.started = true;
-    resetGame(room);
-
-    io.to(code).emit("game-start", {
-      message: "¡Partida 2 contra 2 iniciada!"
-    });
-  }
-
-  io.to(code).emit("room-updated", getRoomResult(code, room));
-}
-
-function updateGame(room, dt) {
-  const playerSpeed = 260;
-
-  for (const player of room.players.values()) {
-    const minX = player.team === "blue" ? 25 : 520;
-    const maxX = player.team === "blue" ? 480 : 975;
-
-    player.x += player.input.x * playerSpeed * dt;
-    player.y += player.input.y * playerSpeed * dt;
-
-    player.x = Math.max(minX, Math.min(maxX, player.x));
-    player.y = Math.max(25, Math.min(575, player.y));
-  }
-
-  const ball = room.ball;
-
-  ball.x += ball.vx * dt;
-  ball.y += ball.vy * dt;
-
-  // Rebots contra les parets
-  if (ball.y - ball.radius < 15) {
-    ball.y = 15 + ball.radius;
-    ball.vy = Math.abs(ball.vy);
-  }
-
-  if (ball.y + ball.radius > COURT.height - 15) {
-    ball.y = COURT.height - 15 - ball.radius;
-    ball.vy = -Math.abs(ball.vy);
-  }
-
-  if (ball.x - ball.radius < 15) {
-    ball.x = 15 + ball.radius;
-    ball.vx = Math.abs(ball.vx);
-  }
-
-  if (ball.x + ball.radius > COURT.width - 15) {
-    ball.x = COURT.width - 15 - ball.radius;
-    ball.vx = -Math.abs(ball.vx);
-  }
-
-  // Contacte amb els quatre jugadors
-  const now = Date.now();
-
-  for (const player of room.players.values()) {
-    const dx = ball.x - player.x;
-    const dy = ball.y - player.y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    const minDistance = ball.radius + 18;
-
-    if (distance < minDistance && now - player.lastHit > 250) {
-      const angle = Math.atan2(dy, dx);
-
-      ball.x = player.x + Math.cos(angle) * minDistance;
-      ball.y = player.y + Math.sin(angle) * minDistance;
-
-      const speed = Math.min(
-        Math.sqrt(ball.vx ** 2 + ball.vy ** 2) + 15,
-        480
-      );
-
-      ball.vx = Math.cos(angle) * speed;
-      ball.vy = Math.sin(angle) * speed;
-
-      player.lastHit = now;
-    }
-  }
-}
-
-// Fitxers del joc
-app.use(express.static(path.resolve(__dirname, "../dist")));
 
 app.get("/", (req, res) => {
-  res.sendFile(path.resolve(__dirname, "../dist/index.html"));
+  res.send("Padel Retro Online - Servidor funcionando.");
 });
 
 app.get("/health", (req, res) => {
-  res.json({
-    status: "ok",
-    game: "Padel Retro Online",
-    multiplayer: "2v2",
-    maxPlayers: MAX_PLAYERS
-  });
+  res.json({ ok: true });
 });
 
-// Connexions Socket.IO
-io.on("connection", socket => {
-  console.log("Jugador conectado:", socket.id);
+function createCode() {
+  let code;
+  do {
+    code = randomInt(10000, 100000).toString();
+  } while (rooms.has(code));
+  return code;
+}
 
-  socket.on("create-room", callback => {
-    leaveCurrentRoom(socket);
+function publicPlayers(room) {
+  return room.players.map((p) => ({
+    id: p.id,
+    slot: p.slot,
+    team: p.team,
+    x: p.x,
+    y: p.y
+  }));
+}
 
-    const code = generateRoomCode();
+function updateRoom(code) {
+  const room = rooms.get(code);
+  if (!room) return;
+
+  io.to(code).emit("room-updated", {
+    code,
+    players: publicPlayers(room),
+    count: room.players.length,
+    started: room.started
+  });
+}
+
+function startGame(room, code) {
+  if (room.players.length !== 4 || room.started) return;
+
+  room.started = true;
+  room.players.forEach((p, i) => {
+    p.x = i % 2 === 0 ? 300 : 700;
+    p.y = i < 2 ? 180 : 420;
+  });
+
+  io.to(code).emit("game-start", {
+    message: "Partida iniciada!"
+  });
+
+  updateRoom(code);
+  broadcastState(code);
+}
+
+function broadcastState(code) {
+  const room = rooms.get(code);
+  if (!room) return;
+
+  io.to(code).emit("game-state", {
+    players: publicPlayers(room),
+    ball: room.ball,
+    score: room.score
+  });
+}
+
+io.on("connection", (socket) => {
+  socket.on("create-room", (callback) => {
+    const code = createCode();
 
     const room = {
-      players: new Map(),
+      players: [],
       started: false,
-      ball: createBall(),
+      ball: { x: 500, y: 300 },
       score: [0, 0]
     };
 
     rooms.set(code, room);
-    addPlayer(socket, room, code);
+    joinPlayer(socket, code);
 
-    if (typeof callback === "function") {
-      callback(getRoomResult(code, room));
-    }
-
-    console.log("Sala creada:", code);
+    callback?.({
+      ok: true,
+      code,
+      players: publicPlayers(room)
+    });
   });
 
-  socket.on("join-room", (data, callback) => {
-    const code = String(data?.code || "")
-      .trim()
-      .toUpperCase();
-
-    if (!/^[A-Z0-9]{5}$/.test(code)) {
-      if (typeof callback === "function") {
-        callback({
-          ok: false,
-          message: "Código de sala no válido."
-        });
-      }
-      return;
-    }
-
+  socket.on("join-room", ({ code } = {}, callback) => {
     const room = rooms.get(code);
 
     if (!room) {
-      if (typeof callback === "function") {
-        callback({
-          ok: false,
-          message: "La sala no existe."
-        });
-      }
-      return;
+      return callback?.({
+        ok: false,
+        message: "Sala no encontrada."
+      });
     }
 
-    if (room.players.has(socket.id)) {
-      if (typeof callback === "function") {
-        callback(getRoomResult(code, room));
-      }
-      return;
+    if (room.players.length >= 4 || room.started) {
+      return callback?.({
+        ok: false,
+        message: "La sala está llena o ya ha comenzado."
+      });
     }
 
-    if (room.players.size >= MAX_PLAYERS) {
-      if (typeof callback === "function") {
-        callback({
-          ok: false,
-          message: "La sala está completa."
-        });
-      }
-      return;
+    joinPlayer(socket, code);
+
+    callback?.({
+      ok: true,
+      code,
+      players: publicPlayers(room)
+    });
+
+    if (room.players.length === 4) {
+      startGame(room, code);
     }
-
-    leaveCurrentRoom(socket);
-
-    addPlayer(socket, room, code);
-
-    if (typeof callback === "function") {
-      callback(getRoomResult(code, room));
-    }
-
-    console.log("Jugador unido a la sala:", code);
   });
 
-  // El mòbil envia la direcció del joystick
-  socket.on("player-input", data => {
+  function joinPlayer(socket, code) {
+    const room = rooms.get(code);
+    if (!room) return;
+
+    const slot = room.players.length;
+
+    room.players.push({
+      id: socket.id,
+      slot,
+      team: slot < 2 ? "blue" : "red",
+      x: slot < 2 ? 250 : 750,
+      y: slot % 2 === 0 ? 180 : 420,
+      input: { x: 0, y: 0 }
+    });
+
+    socket.join(code);
+    socket.data.roomCode = code;
+
+    updateRoom(code);
+  }
+
+  socket.on("player-input", ({ x, y } = {}) => {
     const code = socket.data.roomCode;
     const room = rooms.get(code);
-
     if (!room || !room.started) return;
 
-    const player = room.players.get(socket.id);
+    const player = room.players.find((p) => p.id === socket.id);
     if (!player) return;
 
-    const x = Number(data?.x);
-    const y = Number(data?.y);
-
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-
-    const length = Math.sqrt(x * x + y * y);
-    const scale = length > 1 ? 1 / length : 1;
-
     player.input = {
-      x: x * scale,
-      y: y * scale
+      x: Math.max(-1, Math.min(1, Number(x) || 0)),
+      y: Math.max(-1, Math.min(1, Number(y) || 0))
     };
   });
 
   socket.on("leave-room", () => {
-    leaveCurrentRoom(socket);
+    leaveRoom(socket);
   });
 
   socket.on("disconnect", () => {
-    leaveCurrentRoom(socket);
-    console.log("Jugador desconectado:", socket.id);
+    leaveRoom(socket);
   });
 });
 
-// Motor de joc: 30 actualitzacions per segon
-let lastTick = Date.now();
+function leaveRoom(socket) {
+  const code = socket.data.roomCode;
+  if (!code) return;
+
+  const room = rooms.get(code);
+  if (room) {
+    room.players = room.players.filter(
+      (p) => p.id !== socket.id
+    );
+
+    if (room.players.length === 0) {
+      rooms.delete(code);
+    } else {
+      room.started = false;
+      room.players.forEach((p, i) => {
+        p.slot = i;
+        p.team = i < 2 ? "blue" : "red";
+        p.input = { x: 0, y: 0 };
+      });
+      updateRoom(code);
+    }
+  }
+
+  socket.leave(code);
+  socket.data.roomCode = null;
+}
 
 setInterval(() => {
-  const now = Date.now();
-  const dt = Math.min((now - lastTick) / 1000, 0.05);
-  lastTick = now;
-
   for (const [code, room] of rooms) {
-    if (!room.started || room.players.size !== MAX_PLAYERS) {
-      continue;
+    if (!room.started) continue;
+
+    for (const player of room.players) {
+      player.x = Math.max(45, Math.min(955,
+        player.x + player.input.x * 4
+      ));
+
+      player.y = Math.max(45, Math.min(555,
+        player.y + player.input.y * 4
+      ));
     }
 
-    updateGame(room, dt);
-
-    io.to(code).emit("game-state", {
-      players: getRoomPlayers(room),
-      ball: room.ball,
-      score: room.score
-    });
+    broadcastState(code);
   }
-}, 1000 / TICK_RATE);
+}, 50);
+
+const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Servidor Pádel Retro activo en puerto ${PORT}`);
+  console.log(`Servidor activo en puerto ${PORT}`);
 });
