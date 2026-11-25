@@ -1,352 +1,369 @@
 
-import { useEffect, useRef, useState } from 'react';
-import { io } from 'socket.io-client';
+import { useEffect, useRef, useState } from "react";
+import { io } from "socket.io-client";
 
-const SERVER_URL = 'https://padel-retro-1.onrender.com';
+const SERVER_URL = "https://padel-retro-1.onrender.com";
 
 export default function App() {
   const canvasRef = useRef(null);
-  const controls = useRef({});
-  const [roomCode, setRoomCode] = useState('');
-  const [notice, setNotice] = useState('');
-  const [socket, setSocket] = useState(null);
+  const socketRef = useRef(null);
+
   const [connected, setConnected] = useState(false);
-  const [playerCount, setPlayerCount] = useState(0);
+  const [roomCode, setRoomCode] = useState("");
+  const [inputCode, setInputCode] = useState("");
+  const [players, setPlayers] = useState([]);
+  const [ball, setBall] = useState({ x: 500, y: 300 });
+  const [score, setScore] = useState([0, 0]);
+  const [started, setStarted] = useState(false);
+  const [notice, setNotice] = useState("Connectant amb el servidor...");
 
   useEffect(() => {
-    const connection = io(SERVER_URL);
-    setSocket(connection);
+    const socket = io(SERVER_URL);
+    socketRef.current = socket;
 
-    connection.on('connect', () => {
+    socket.on("connect", () => {
       setConnected(true);
-      setNotice('Conectado al servidor online.');
+      setNotice("Connectat! Crea una sala o entra en una.");
     });
 
-    connection.on('disconnect', () => {
+    socket.on("disconnect", () => {
       setConnected(false);
-      setPlayerCount(0);
-      setNotice('Reconectando...');
+      setStarted(false);
+      setNotice("Connexió perduda. Reconnectant...");
     });
 
-    connection.on('connect_error', () => {
-      setNotice('No se pudo conectar al servidor.');
+    socket.on("connect_error", () => {
+      setNotice("No es pot connectar. Torna-ho a provar.");
     });
 
-    connection.on('room-updated', room => {
-      setPlayerCount(room.count);
-      setRoomCode(room.code);
+    socket.on("room-updated", (data) => {
+      setRoomCode(data.code);
+      setPlayers(data.players || []);
+      setStarted(data.started);
+      if (data.message) setNotice(data.message);
+      else setNotice(`Jugadors: ${data.count}/4`);
     });
 
-    return () => connection.disconnect();
-  }, []);
-
-  function createRoom() {
-    if (!socket?.connected) {
-      setNotice('Esperando conexión con el servidor.');
-      return;
-    }
-
-    socket.emit('create-room', result => {
-      if (!result.ok) {
-        setNotice(result.message || 'Error al crear sala.');
-        return;
-      }
-
-      setRoomCode(result.code);
-      setPlayerCount(result.count);
-      setNotice(`Sala ${result.code} creada. ¡Invita a tus amigos!`);
+    socket.on("game-start", (data) => {
+      setStarted(true);
+      setNotice(data.message || "Partida iniciada!");
     });
-  }
 
-  function joinRoom(event) {
-    event.preventDefault();
-
-    if (!socket?.connected) {
-      setNotice('No hay conexión con el servidor.');
-      return;
-    }
-
-    const code = roomCode.trim().toUpperCase();
-
-    socket.emit('join-room', { code }, result => {
-      if (!result.ok) {
-        setNotice(result.message || 'No se pudo entrar.');
-        return;
-      }
-
-      setRoomCode(result.code);
-      setPlayerCount(result.count);
-      setNotice(`¡Dentro de la sala ${result.code}!`);
+    socket.on("game-state", (data) => {
+      setPlayers(data.players || []);
+      setBall(data.ball || { x: 500, y: 300 });
+      setScore(data.score || [0, 0]);
     });
-  }
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-
-    const W = 800;
-    const H = 450;
-
-    let left = { x: 35, y: 180 };
-    let right = { x: 753, y: 180 };
-    let ball = { x: 400, y: 225, vx: 5, vy: 3 };
-
-    let score = [0, 0];
-    let animation;
-    let lastTime = 0;
-
-    const paddleHeight = 85;
-    const paddleWidth = 12;
-
-    function resetBall() {
-      ball = {
-        x: W / 2,
-        y: H / 2,
-        vx: ball.vx > 0 ? -5 : 5,
-        vy: Math.random() > 0.5 ? 3 : -3
-      };
-    }
-
-    function update(delta) {
-      const speed = 0.35 * delta;
-
-      if (controls.current.leftUp) left.y -= speed;
-      if (controls.current.leftDown) left.y += speed;
-      if (controls.current.rightUp) right.y -= speed;
-      if (controls.current.rightDown) right.y += speed;
-
-      left.y = Math.max(10, Math.min(H - paddleHeight - 10, left.y));
-      right.y = Math.max(10, Math.min(H - paddleHeight - 10, right.y));
-
-      ball.x += ball.vx * delta / 16.67;
-      ball.y += ball.vy * delta / 16.67;
-
-      if (ball.y < 15 || ball.y > H - 15) {
-        ball.vy *= -1;
-      }
-
-      if (
-        ball.vx < 0 &&
-        ball.x - 10 < left.x + paddleWidth &&
-        ball.x > left.x &&
-        ball.y > left.y - 8 &&
-        ball.y < left.y + paddleHeight + 8
-      ) {
-        ball.vx = Math.abs(ball.vx) + 0.3;
-      }
-
-      if (
-        ball.vx > 0 &&
-        ball.x + 10 > right.x &&
-        ball.x < right.x + paddleWidth &&
-        ball.y > right.y - 8 &&
-        ball.y < right.y + paddleHeight + 8
-      ) {
-        ball.vx = -Math.abs(ball.vx) - 0.3;
-      }
-
-      if (ball.x < 0) {
-        score[1]++;
-        resetBall();
-      }
-
-      if (ball.x > W) {
-        score[0]++;
-        resetBall();
-      }
-    }
-
-    function draw() {
-      ctx.fillStyle = '#176b42';
-      ctx.fillRect(0, 0, W, H);
-
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 4;
-      ctx.strokeRect(10, 10, W - 20, H - 20);
-
-      ctx.setLineDash([12, 12]);
-      ctx.beginPath();
-      ctx.moveTo(W / 2, 10);
-      ctx.lineTo(W / 2, H - 10);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(left.x, left.y, paddleWidth, paddleHeight);
-      ctx.fillRect(right.x, right.y, paddleWidth, paddleHeight);
-
-      ctx.beginPath();
-      ctx.arc(ball.x, ball.y, 10, 0, Math.PI * 2);
-      ctx.fillStyle = '#eaff54';
-      ctx.fill();
-
-      ctx.font = 'bold 38px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(`${score[0]} - ${score[1]}`, W / 2, 55);
-    }
-
-    function loop(time) {
-      const delta = lastTime ? Math.min(time - lastTime, 40) : 16.67;
-      lastTime = time;
-
-      update(delta);
-      draw();
-
-      animation = requestAnimationFrame(loop);
-    }
-
-    function keyDown(e) {
-      const key = e.key.toLowerCase();
-
-      if (['arrowup', 'arrowdown', 'w', 's'].includes(key)) {
-        e.preventDefault();
-      }
-
-      if (key === 'w') controls.current.leftUp = true;
-      if (key === 's') controls.current.leftDown = true;
-      if (key === 'arrowup') controls.current.rightUp = true;
-      if (key === 'arrowdown') controls.current.rightDown = true;
-    }
-
-    function keyUp(e) {
-      const key = e.key.toLowerCase();
-
-      if (key === 'w') controls.current.leftUp = false;
-      if (key === 's') controls.current.leftDown = false;
-      if (key === 'arrowup') controls.current.rightUp = false;
-      if (key === 'arrowdown') controls.current.rightDown = false;
-    }
-
-    window.addEventListener('keydown', keyDown);
-    window.addEventListener('keyup', keyUp);
-
-    animation = requestAnimationFrame(loop);
 
     return () => {
-      cancelAnimationFrame(animation);
-      window.removeEventListener('keydown', keyDown);
-      window.removeEventListener('keyup', keyUp);
+      socket.disconnect();
+      socketRef.current = null;
     };
   }, []);
 
-  function hold(control, active) {
-    controls.current[control] = active;
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, 1000, 600);
+
+    // Fons i pista
+    ctx.fillStyle = "#176b43";
+    ctx.fillRect(0, 0, 1000, 600);
+
+    ctx.fillStyle = "#247e50";
+    ctx.fillRect(25, 25, 950, 550);
+
+    // Línies exteriors
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 5;
+    ctx.strokeRect(25, 25, 950, 550);
+
+    // Xarxa central
+    ctx.beginPath();
+    ctx.moveTo(500, 25);
+    ctx.lineTo(500, 575);
+    ctx.strokeStyle = "#eeeeee";
+    ctx.lineWidth = 8;
+    ctx.stroke();
+
+    // Línies de servei
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(250, 25);
+    ctx.lineTo(250, 575);
+    ctx.moveTo(750, 25);
+    ctx.lineTo(750, 575);
+    ctx.moveTo(250, 300);
+    ctx.lineTo(750, 300);
+    ctx.stroke();
+
+    // Jugadors
+    players.forEach((player) => {
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, 19, 0, Math.PI * 2);
+      ctx.fillStyle = player.team === "blue" ? "#36a8ff" : "#ff5555";
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "#ffffff";
+      ctx.stroke();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 15px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText(`J${player.slot + 1}`, player.x, player.y - 27);
+    });
+
+    // Pilota
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, 11, 0, Math.PI * 2);
+    ctx.fillStyle = "#eaff40";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#ffffff";
+    ctx.stroke();
+  }, [players, ball]);
+
+  function createRoom() {
+    socketRef.current?.emit("create-room", (result) => {
+      if (!result?.ok) {
+        setNotice(result?.message || "No s'ha pogut crear la sala.");
+        return;
+      }
+      setRoomCode(result.code);
+      setPlayers(result.players || []);
+      setNotice("Sala creada. Esperant jugadors...");
+    });
+  }
+
+  function joinRoom() {
+    const code = inputCode.trim().toUpperCase();
+
+    if (code.length !== 5) {
+      setNotice("Escriu un codi de 5 caràcters.");
+      return;
+    }
+
+    socketRef.current?.emit("join-room", { code }, (result) => {
+      if (!result?.ok) {
+        setNotice(result?.message || "No s'ha pogut entrar a la sala.");
+        return;
+      }
+      setRoomCode(result.code);
+      setPlayers(result.players || []);
+      setNotice(`Has entrat a la sala ${result.code}.`);
+    });
+  }
+
+  function sendJoystick(x, y) {
+    if (!started) return;
+    socketRef.current?.emit("player-input", { x, y });
+  }
+
+  function handleJoystick(event) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+
+    let x = (event.clientX - centerX) / (rect.width * 0.35);
+    let y = (event.clientY - centerY) / (rect.height * 0.35);
+
+    const length = Math.sqrt(x * x + y * y);
+    if (length > 1) {
+      x /= length;
+      y /= length;
+    }
+
+    sendJoystick(x, y);
+  }
+
+  function stopJoystick() {
+    sendJoystick(0, 0);
+  }
+
+  function leaveRoom() {
+    socketRef.current?.emit("leave-room");
+    setRoomCode("");
+    setPlayers([]);
+    setStarted(false);
+    setNotice("Has sortit de la sala.");
   }
 
   const buttonStyle = {
-    padding: '15px 22px',
-    margin: '5px',
-    fontSize: '20px',
-    fontWeight: 'bold',
-    background: '#eaff54',
-    color: '#101a2d',
-    border: '0',
-    borderRadius: '8px',
-    touchAction: 'none'
+    padding: "12px 18px",
+    border: "0",
+    borderRadius: "10px",
+    background: "#e8bd43",
+    color: "#17251c",
+    fontWeight: "bold",
+    fontSize: "15px",
+    cursor: "pointer"
   };
 
   return (
-    <main className="page-shell">
-      <header className="topbar">
-        <a className="brand" href="#inicio">
-          <span className="brand-mark">PR</span>
-          <span>PÁDEL<span className="brand-accent">RETRO</span></span>
-        </a>
-        <span className="status">
-          <i /> {connected ? 'ONLINE' : 'CONECTANDO'}
-        </span>
-      </header>
+    <main style={{
+      minHeight: "100vh",
+      background: "#14251c",
+      color: "white",
+      padding: "18px",
+      fontFamily: "Arial, sans-serif",
+      textAlign: "center",
+      boxSizing: "border-box"
+    }}>
+      <h1 style={{ color: "#e8bd43", marginBottom: "5px" }}>
+        🎾 PÁDEL RETRO
+      </h1>
+      <p style={{ marginTop: 0 }}>ONLINE · 2 CONTRA 2</p>
 
-      <section className="hero" id="inicio">
-        <div className="hero-copy">
-          <p className="eyebrow">INSERT COIN · SELECT TEAM</p>
-          <h1>¡A la pista,<br /><span>campeón!</span></h1>
-          <p className="intro">
-            Pádel clásico, energía arcade. ¡Empieza a jugar!
-          </p>
+      <p style={{ color: connected ? "#75e69a" : "#ff8585" }}>
+        ● {connected ? "Servidor connectat" : "Connectant..."}
+      </p>
 
-          <button className="primary-button" onClick={createRoom}>
-            CREAR PARTIDA ↗
-          </button>
+      <div style={{
+        background: "#263c30",
+        padding: "14px",
+        borderRadius: "12px",
+        maxWidth: "600px",
+        margin: "0 auto 16px"
+      }}>
+        <p>{notice}</p>
 
-          <form className="join-form" onSubmit={joinRoom}>
-            <input
-              value={roomCode}
-              onChange={e => setRoomCode(e.target.value.toUpperCase())}
-              placeholder="CÓDIGO DE SALA"
-              maxLength={5}
-            />
-            <button type="submit" className="join-button">
-              UNIRSE
+        {!roomCode ? (
+          <>
+            <button
+              style={buttonStyle}
+              onClick={createRoom}
+              disabled={!connected}
+            >
+              CREAR SALA
             </button>
-          </form>
 
-          {notice && <p className="notice">{notice}</p>}
+            <div style={{
+              display: "flex",
+              gap: "8px",
+              justifyContent: "center",
+              marginTop: "14px",
+              flexWrap: "wrap"
+            }}>
+              <input
+                value={inputCode}
+                onChange={(e) => setInputCode(e.target.value.toUpperCase())}
+                placeholder="CODI DE SALA"
+                maxLength={5}
+                style={{
+                  padding: "12px",
+                  width: "145px",
+                  borderRadius: "8px",
+                  border: "0",
+                  textAlign: "center",
+                  fontSize: "16px"
+                }}
+              />
+              <button
+                style={buttonStyle}
+                onClick={joinRoom}
+                disabled={!connected}
+              >
+                ENTRAR
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 style={{ color: "#e8bd43", letterSpacing: "4px" }}>
+              {roomCode}
+            </h2>
+            <p>Comparteix aquest codi amb els altres jugadors.</p>
+            <p>Jugadors: {players.length}/4</p>
+            <p>{started ? "PARTIDA EN JOC" : "ESPERANT JUGADORS..."}</p>
+            <button style={buttonStyle} onClick={leaveRoom}>
+              SORTIR DE LA SALA
+            </button>
+          </>
+        )}
+      </div>
 
-          <p>{playerCount}/4 JUGADORES CONECTADOS</p>
+      <div style={{
+        maxWidth: "800px",
+        margin: "auto",
+        background: "#247e50",
+        borderRadius: "12px",
+        overflow: "hidden"
+      }}>
+        <div style={{
+          display: "flex",
+          justifyContent: "space-around",
+          padding: "12px",
+          fontSize: "22px",
+          fontWeight: "bold"
+        }}>
+          <span style={{ color: "#65baff" }}>BLAUS {score[0]}</span>
+          <span style={{ color: "#ff8585" }}>VERMELLS {score[1]}</span>
         </div>
-      </section>
-
-      <section style={{ padding: 12, textAlign: 'center' }}>
-        <h2>¡PÁDEL RETRO ARCADE!</h2>
 
         <canvas
           ref={canvasRef}
-          width={800}
-          height={450}
+          width={1000}
+          height={600}
           style={{
-            width: '100%',
-            maxWidth: '800px',
-            height: 'auto',
-            border: '4px solid #eaff54',
-            borderRadius: '8px',
-            display: 'block',
-            margin: 'auto'
+            display: "block",
+            width: "100%",
+            height: "auto",
+            touchAction: "none"
           }}
         />
+      </div>
 
-        <p>Jugador 1: W / S · Jugador 2: ↑ / ↓</p>
+      <div style={{
+        margin: "22px auto",
+        maxWidth: "350px"
+      }}>
+        <p style={{ color: "#e8bd43", fontWeight: "bold" }}>
+          JOYSTICK DE MOVIMENT
+        </p>
 
-        <div>
-          <button
-            style={buttonStyle}
-            onPointerDown={() => hold('leftUp', true)}
-            onPointerUp={() => hold('leftUp', false)}
-            onPointerLeave={() => hold('leftUp', false)}
-            onPointerCancel={() => hold('leftUp', false)}
-          >⬆ J1</button>
-
-          <button
-            style={buttonStyle}
-            onPointerDown={() => hold('leftDown', true)}
-            onPointerUp={() => hold('leftDown', false)}
-            onPointerLeave={() => hold('leftDown', false)}
-            onPointerCancel={() => hold('leftDown', false)}
-          >⬇ J1</button>
-
-          <button
-            style={buttonStyle}
-            onPointerDown={() => hold('rightUp', true)}
-            onPointerUp={() => hold('rightUp', false)}
-            onPointerLeave={() => hold('rightUp', false)}
-            onPointerCancel={() => hold('rightUp', false)}
-          >⬆ J2</button>
-
-          <button
-            style={buttonStyle}
-            onPointerDown={() => hold('rightDown', true)}
-            onPointerUp={() => hold('rightDown', false)}
-            onPointerLeave={() => hold('rightDown', false)}
-            onPointerCancel={() => hold('rightDown', false)}
-          >⬇ J2</button>
+        <div
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            handleJoystick(e);
+          }}
+          onPointerMove={(e) => {
+            if (e.buttons === 1) handleJoystick(e);
+          }}
+          onPointerUp={stopJoystick}
+          onPointerCancel={stopJoystick}
+          style={{
+            width: "150px",
+            height: "150px",
+            borderRadius: "50%",
+            background: "#344c3e",
+            border: "4px solid #e8bd43",
+            margin: "auto",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            touchAction: "none",
+            userSelect: "none"
+          }}
+        >
+          <div style={{
+            width: "55px",
+            height: "55px",
+            borderRadius: "50%",
+            background: "#e8bd43",
+            boxShadow: "0 3px 8px #111"
+          }} />
         </div>
-      </section>
 
-      <footer>
-        <span>© 1986–2026 PÁDEL RETRO</span>
-        <span>HECHO PARA GRANDES PARTIDOS ♥</span>
-      </footer>
+        <p style={{ fontSize: "13px", color: "#c5d4ca" }}>
+          Arrossega el dit pel joystick per moure el teu jugador.
+        </p>
+      </div>
+
+      <p style={{ fontSize: "12px", color: "#9aafa1" }}>
+        Pádel Retro Online · Primera versió multijugador
+      </p>
     </main>
   );
 }
