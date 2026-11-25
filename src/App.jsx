@@ -7,15 +7,21 @@ const SERVER_URL = "https://padel-retro-1.onrender.com";
 export default function App() {
   const canvasRef = useRef(null);
   const socketRef = useRef(null);
+  const joystickRef = useRef(null);
 
   const [connected, setConnected] = useState(false);
   const [roomCode, setRoomCode] = useState("");
   const [inputCode, setInputCode] = useState("");
   const [players, setPlayers] = useState([]);
-  const [ball, setBall] = useState({ x: 500, y: 300 });
-  const [score, setScore] = useState([0, 0]);
+  const [ball, setBall] = useState({
+    x: 500,
+    y: 300,
+    moving: false,
+  });
+  const [score, setScore] = useState({ blue: 0, red: 0 });
   const [started, setStarted] = useState(false);
-  const [notice, setNotice] = useState("Connectant amb el servidor...");
+  const [notice, setNotice] = useState("Conectando al servidor...");
+  const [hitting, setHitting] = useState(false);
 
   useEffect(() => {
     const socket = io(SERVER_URL);
@@ -23,39 +29,62 @@ export default function App() {
 
     socket.on("connect", () => {
       setConnected(true);
-      setNotice("Connectat! Crea una sala o entra en una.");
+      setNotice("Conectado. ¡A jugar!");
     });
 
     socket.on("disconnect", () => {
       setConnected(false);
-      setStarted(false);
-      setNotice("Connexió perduda. Reconnectant...");
+      setNotice("Conexión perdida. Reconectando...");
     });
 
     socket.on("connect_error", () => {
-      setNotice("No es pot connectar. Torna-ho a provar.");
+      setConnected(false);
+      setNotice("No se puede conectar con el servidor.");
     });
 
     socket.on("room-updated", (data) => {
-      setRoomCode(data.code);
-      setPlayers(data.players || []);
-      setStarted(data.started);
-      if (data.message) setNotice(data.message);
-      else setNotice(`Jugadors: ${data.count}/4`);
+      if (!data) return;
+
+      const code = data.code || data.roomCode;
+      if (code) setRoomCode(String(code));
+
+      if (Array.isArray(data.players)) {
+        setPlayers(data.players);
+      }
+
+      if (data.ball) setBall(data.ball);
+      if (data.score) setScore(data.score);
+
+      if (data.started !== undefined) {
+        setStarted(data.started);
+      }
     });
 
     socket.on("game-start", (data) => {
       setStarted(true);
-      setNotice(data.message || "Partida iniciada!");
+      setNotice("¡Partida iniciada!");
+      if (data?.players) setPlayers(data.players);
+      if (data?.ball) setBall(data.ball);
     });
 
     socket.on("game-state", (data) => {
-      setPlayers(data.players || []);
-      setBall(data.ball || { x: 500, y: 300 });
-      setScore(data.score || [0, 0]);
+      if (!data) return;
+
+      if (Array.isArray(data.players)) {
+        setPlayers(data.players);
+      }
+
+      if (data.ball) setBall(data.ball);
+      if (data.score) setScore(data.score);
+    });
+
+    socket.on("point-scored", (data) => {
+      if (data?.score) setScore(data.score);
+      setNotice("¡Punto!");
     });
 
     return () => {
+      socket.removeAllListeners();
       socket.disconnect();
       socketRef.current = null;
     };
@@ -66,204 +95,259 @@ export default function App() {
     if (!canvas) return;
 
     const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, 1000, 600);
+    const width = canvas.width;
+    const height = canvas.height;
 
-    // Fons i pista
-    ctx.fillStyle = "#176b43";
-    ctx.fillRect(0, 0, 1000, 600);
+    ctx.clearRect(0, 0, width, height);
 
-    ctx.fillStyle = "#247e50";
+    // Fondo y pista
+    ctx.fillStyle = "#176b3a";
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.fillStyle = "#328b50";
     ctx.fillRect(25, 25, 950, 550);
 
-    // Línies exteriors
-    ctx.strokeStyle = "#ffffff";
-    ctx.lineWidth = 5;
+    // Líneas de la pista
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = 4;
     ctx.strokeRect(25, 25, 950, 550);
 
-    // Xarxa central
     ctx.beginPath();
     ctx.moveTo(500, 25);
     ctx.lineTo(500, 575);
-    ctx.strokeStyle = "#eeeeee";
-    ctx.lineWidth = 8;
     ctx.stroke();
 
-    // Línies de servei
-    ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.moveTo(250, 25);
-    ctx.lineTo(250, 575);
-    ctx.moveTo(750, 25);
-    ctx.lineTo(750, 575);
-    ctx.moveTo(250, 300);
-    ctx.lineTo(750, 300);
+    ctx.moveTo(25, 170);
+    ctx.lineTo(975, 170);
+    ctx.moveTo(25, 430);
+    ctx.lineTo(975, 430);
     ctx.stroke();
 
-    // Jugadors
-    players.forEach((player) => {
+    // Red
+    ctx.strokeStyle = "#dddddd";
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    ctx.moveTo(500, 25);
+    ctx.lineTo(500, 575);
+    ctx.stroke();
+
+    // Jugadores
+    players.forEach((player, index) => {
+      const x = Number(player.x ?? 250);
+      const y = Number(player.y ?? 150 + index * 100);
+
       ctx.beginPath();
-      ctx.arc(player.x, player.y, 19, 0, Math.PI * 2);
-      ctx.fillStyle = player.team === "blue" ? "#36a8ff" : "#ff5555";
+      ctx.arc(x, y, 17, 0, Math.PI * 2);
+      ctx.fillStyle =
+        player.team === "red" ? "#ed3434" : "#258cff";
       ctx.fill();
+
+      ctx.strokeStyle = "white";
       ctx.lineWidth = 3;
-      ctx.strokeStyle = "#ffffff";
       ctx.stroke();
 
-      ctx.fillStyle = "#ffffff";
-      ctx.font = "bold 15px Arial";
+      ctx.fillStyle = "white";
+      ctx.font = "bold 13px Arial";
       ctx.textAlign = "center";
-      ctx.fillText(`J${player.slot + 1}`, player.x, player.y - 27);
+      ctx.fillText(
+        player.name || `J${index + 1}`,
+        x,
+        y - 25
+      );
     });
 
-    // Pilota
-    ctx.beginPath();
-    ctx.arc(ball.x, ball.y, 11, 0, Math.PI * 2);
-    ctx.fillStyle = "#eaff40";
-    ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = "#ffffff";
-    ctx.stroke();
+    // Pelota
+    if (ball) {
+      const bx = Number(ball.x ?? 500);
+      const by = Number(ball.y ?? 300);
+
+      if (ball.moving) {
+        ctx.beginPath();
+        ctx.arc(bx, by, 13, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255,255,255,0.25)";
+        ctx.fill();
+      }
+
+      ctx.beginPath();
+      ctx.arc(bx, by, 9, 0, Math.PI * 2);
+      ctx.fillStyle = "#f4ed35";
+      ctx.fill();
+
+      ctx.strokeStyle = "#333333";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
   }, [players, ball]);
 
   function createRoom() {
-    socketRef.current?.emit("create-room", (result) => {
-      if (!result?.ok) {
-        setNotice(result?.message || "No s'ha pogut crear la sala.");
-        return;
-      }
-      setRoomCode(result.code);
-      setPlayers(result.players || []);
-      setNotice("Sala creada. Esperant jugadors...");
-    });
-  }
-
-  function joinRoom() {
-    const code = inputCode.trim().toUpperCase();
-
-    if (code.length !== 5) {
-      setNotice("Escriu un codi de 5 caràcters.");
+    if (!socketRef.current?.connected) {
+      setNotice("Espera a que se conecte el servidor.");
       return;
     }
 
-    socketRef.current?.emit("join-room", { code }, (result) => {
-      if (!result?.ok) {
-        setNotice(result?.message || "No s'ha pogut entrar a la sala.");
-        return;
+    socketRef.current.emit("create-room");
+    setNotice("Creando sala...");
+  }
+
+  function joinRoom() {
+    if (!socketRef.current?.connected) {
+      setNotice("Espera a que se conecte el servidor.");
+      return;
+    }
+
+    const code = inputCode.trim();
+
+    if (!/^\d{5}$/.test(code)) {
+      setNotice("Introduce un código de 5 números.");
+      return;
+    }
+
+    socketRef.current.emit("join-room", { code });
+    setNotice("Entrando en la sala...");
+  }
+
+  function hitBall() {
+    if (!socketRef.current?.connected || !roomCode) return;
+
+    if (hitting) return;
+
+    setHitting(true);
+
+    socketRef.current.emit("player-hit", (response) => {
+      setHitting(false);
+
+      if (response?.ok) {
+        setNotice("¡Buen golpe!");
+      } else {
+        setNotice(
+          response?.message || "Acércate a la pelota para golpearla."
+        );
       }
-      setRoomCode(result.code);
-      setPlayers(result.players || []);
-      setNotice(`Has entrat a la sala ${result.code}.`);
     });
+
+    // Evita que el botón quede bloqueado si el servidor no responde.
+    setTimeout(() => setHitting(false), 1500);
   }
 
-  function sendJoystick(x, y) {
-    if (!started) return;
-    socketRef.current?.emit("player-input", { x, y });
-  }
+  function moveJoystick(event) {
+    if (!joystickRef.current || !socketRef.current || !roomCode) {
+      return;
+    }
 
-  function handleJoystick(event) {
-    const rect = event.currentTarget.getBoundingClientRect();
+    const rect = joystickRef.current.getBoundingClientRect();
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
 
-    let x = (event.clientX - centerX) / (rect.width * 0.35);
-    let y = (event.clientY - centerY) / (rect.height * 0.35);
+    let x = (event.clientX - centerX) / (rect.width / 2);
+    let y = (event.clientY - centerY) / (rect.height / 2);
 
-    const length = Math.sqrt(x * x + y * y);
-    if (length > 1) {
-      x /= length;
-      y /= length;
-    }
+    x = Math.max(-1, Math.min(1, x));
+    y = Math.max(-1, Math.min(1, y));
 
-    sendJoystick(x, y);
+    socketRef.current.emit("player-input", { x, y });
   }
 
   function stopJoystick() {
-    sendJoystick(0, 0);
+    if (socketRef.current && roomCode) {
+      socketRef.current.emit("player-input", { x: 0, y: 0 });
+    }
   }
 
   function leaveRoom() {
-    socketRef.current?.emit("leave-room");
+    if (socketRef.current) {
+      socketRef.current.emit("leave-room");
+    }
+
     setRoomCode("");
     setPlayers([]);
     setStarted(false);
-    setNotice("Has sortit de la sala.");
+    setScore({ blue: 0, red: 0 });
+    setNotice("Has salido de la sala.");
   }
 
   const buttonStyle = {
     padding: "12px 18px",
-    border: "0",
-    borderRadius: "10px",
-    background: "#e8bd43",
-    color: "#17251c",
+    margin: "5px",
+    border: "none",
+    borderRadius: "9px",
     fontWeight: "bold",
     fontSize: "15px",
-    cursor: "pointer"
+    cursor: "pointer",
   };
 
   return (
-    <main style={{
-      minHeight: "100vh",
-      background: "#14251c",
-      color: "white",
-      padding: "18px",
-      fontFamily: "Arial, sans-serif",
-      textAlign: "center",
-      boxSizing: "border-box"
-    }}>
-      <h1 style={{ color: "#e8bd43", marginBottom: "5px" }}>
+    <main
+      style={{
+        minHeight: "100vh",
+        background: "#10251a",
+        color: "white",
+        fontFamily: "Arial, sans-serif",
+        padding: "16px",
+        textAlign: "center",
+        boxSizing: "border-box",
+      }}
+    >
+      <h1 style={{ color: "#f4ed35", margin: "8px 0" }}>
         🎾 PÁDEL RETRO
       </h1>
-      <p style={{ marginTop: 0 }}>ONLINE · 2 CONTRA 2</p>
 
-      <p style={{ color: connected ? "#75e69a" : "#ff8585" }}>
-        ● {connected ? "Servidor connectat" : "Connectant..."}
+      <p style={{ margin: "8px" }}>
+        {connected ? "🟢 Conectado" : "🔴 Desconectado"}
       </p>
 
-      <div style={{
-        background: "#263c30",
-        padding: "14px",
-        borderRadius: "12px",
-        maxWidth: "600px",
-        margin: "0 auto 16px"
-      }}>
+      <div
+        style={{
+          background: "#263c30",
+          padding: "14px",
+          borderRadius: "12px",
+          maxWidth: "600px",
+          margin: "0 auto 16px",
+        }}
+      >
         <p>{notice}</p>
 
         {!roomCode ? (
           <>
             <button
-              style={buttonStyle}
               onClick={createRoom}
               disabled={!connected}
+              style={{
+                ...buttonStyle,
+                background: "#f4ed35",
+                color: "#17251b",
+              }}
             >
-              CREAR SALA
+              CREAR PARTIDA
             </button>
 
-            <div style={{
-              display: "flex",
-              gap: "8px",
-              justifyContent: "center",
-              marginTop: "14px",
-              flexWrap: "wrap"
-            }}>
+            <div style={{ marginTop: "15px" }}>
               <input
                 value={inputCode}
-                onChange={(e) => setInputCode(e.target.value.toUpperCase())}
-                placeholder="CODI DE SALA"
+                onChange={(event) =>
+                  setInputCode(event.target.value.replace(/\D/g, "").slice(0, 5))
+                }
+                placeholder="Código de sala"
+                inputMode="numeric"
                 maxLength={5}
                 style={{
                   padding: "12px",
                   width: "145px",
                   borderRadius: "8px",
-                  border: "0",
+                  border: "none",
+                  fontSize: "16px",
                   textAlign: "center",
-                  fontSize: "16px"
                 }}
               />
+
               <button
-                style={buttonStyle}
                 onClick={joinRoom}
                 disabled={!connected}
+                style={{
+                  ...buttonStyle,
+                  background: "#258cff",
+                  color: "white",
+                }}
               >
                 ENTRAR
               </button>
@@ -271,98 +355,140 @@ export default function App() {
           </>
         ) : (
           <>
-            <h2 style={{ color: "#e8bd43", letterSpacing: "4px" }}>
-              {roomCode}
+            <h2>
+              Sala: <span style={{ color: "#f4ed35" }}>{roomCode}</span>
             </h2>
-            <p>Comparteix aquest codi amb els altres jugadors.</p>
-            <p>Jugadors: {players.length}/4</p>
-            <p>{started ? "PARTIDA EN JOC" : "ESPERANT JUGADORS..."}</p>
-            <button style={buttonStyle} onClick={leaveRoom}>
-              SORTIR DE LA SALA
+            <p>Jugadores: {players.length} / 4</p>
+            <p>
+              {started
+                ? "🏆 ¡PARTIDA EN JUEGO!"
+                : "Esperando a los 4 jugadores..."}
+            </p>
+
+            <button
+              onClick={leaveRoom}
+              style={{
+                ...buttonStyle,
+                background: "#b83232",
+                color: "white",
+              }}
+            >
+              SALIR DE LA SALA
             </button>
           </>
         )}
       </div>
 
-      <div style={{
-        maxWidth: "800px",
-        margin: "auto",
-        background: "#247e50",
-        borderRadius: "12px",
-        overflow: "hidden"
-      }}>
-        <div style={{
-          display: "flex",
-          justifyContent: "space-around",
-          padding: "12px",
-          fontSize: "22px",
-          fontWeight: "bold"
-        }}>
-          <span style={{ color: "#65baff" }}>BLAUS {score[0]}</span>
-          <span style={{ color: "#ff8585" }}>VERMELLS {score[1]}</span>
-        </div>
+      {roomCode && (
+        <>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              gap: "35px",
+              fontSize: "24px",
+              fontWeight: "bold",
+              margin: "12px",
+            }}
+          >
+            <span style={{ color: "#258cff" }}>
+              AZUL {score.blue ?? 0}
+            </span>
+            <span style={{ color: "#ff4949" }}>
+              ROJO {score.red ?? 0}
+            </span>
+          </div>
 
-        <canvas
-          ref={canvasRef}
-          width={1000}
-          height={600}
-          style={{
-            display: "block",
-            width: "100%",
-            height: "auto",
-            touchAction: "none"
-          }}
-        />
-      </div>
+          <canvas
+            ref={canvasRef}
+            width={1000}
+            height={600}
+            style={{
+              width: "100%",
+              maxWidth: "650px",
+              height: "auto",
+              border: "3px solid white",
+              borderRadius: "8px",
+              display: "block",
+              margin: "0 auto",
+              background: "#176b3a",
+            }}
+          />
 
-      <div style={{
-        margin: "22px auto",
-        maxWidth: "350px"
-      }}>
-        <p style={{ color: "#e8bd43", fontWeight: "bold" }}>
-          JOYSTICK DE MOVIMENT
-        </p>
+          {started && (
+            <div
+              style={{
+                maxWidth: "600px",
+                margin: "18px auto",
+                display: "flex",
+                justifyContent: "space-around",
+                alignItems: "center",
+                gap: "20px",
+              }}
+            >
+              <div>
+                <p style={{ fontWeight: "bold" }}>JOYSTICK</p>
+                <div
+                  ref={joystickRef}
+                  onPointerDown={(event) => {
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    moveJoystick(event);
+                  }}
+                  onPointerMove={(event) => {
+                    if (event.buttons === 1) moveJoystick(event);
+                  }}
+                  onPointerUp={stopJoystick}
+                  onPointerCancel={stopJoystick}
+                  style={{
+                    width: "125px",
+                    height: "125px",
+                    borderRadius: "50%",
+                    background: "#344d3c",
+                    border: "4px solid #a7c5a9",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    touchAction: "none",
+                    userSelect: "none",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: "48px",
+                      height: "48px",
+                      borderRadius: "50%",
+                      background: "#f4ed35",
+                      border: "3px solid white",
+                    }}
+                  />
+                </div>
+              </div>
 
-        <div
-          onPointerDown={(e) => {
-            e.currentTarget.setPointerCapture(e.pointerId);
-            handleJoystick(e);
-          }}
-          onPointerMove={(e) => {
-            if (e.buttons === 1) handleJoystick(e);
-          }}
-          onPointerUp={stopJoystick}
-          onPointerCancel={stopJoystick}
-          style={{
-            width: "150px",
-            height: "150px",
-            borderRadius: "50%",
-            background: "#344c3e",
-            border: "4px solid #e8bd43",
-            margin: "auto",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            touchAction: "none",
-            userSelect: "none"
-          }}
-        >
-          <div style={{
-            width: "55px",
-            height: "55px",
-            borderRadius: "50%",
-            background: "#e8bd43",
-            boxShadow: "0 3px 8px #111"
-          }} />
-        </div>
+              <button
+                onClick={hitBall}
+                disabled={hitting}
+                style={{
+                  width: "115px",
+                  height: "115px",
+                  borderRadius: "50%",
+                  background: hitting ? "#888" : "#e83c32",
+                  color: "white",
+                  border: "4px solid white",
+                  fontSize: "18px",
+                  fontWeight: "bold",
+                  cursor: "pointer",
+                  touchAction: "manipulation",
+                }}
+              >
+                {hitting ? "..." : "GOLPEAR"}
+              </button>
+            </div>
+          )}
+        </>
+      )}
 
-        <p style={{ fontSize: "13px", color: "#c5d4ca" }}>
-          Arrossega el dit pel joystick per moure el teu jugador.
-        </p>
-      </div>
-
-      <p style={{ fontSize: "12px", color: "#9aafa1" }}>
-        Pádel Retro Online · Primera versió multijugador
+      <p style={{ fontSize: "12px", opacity: 0.7, marginTop: "25px" }}>
+        PÁDEL RETRO ONLINE · Versión de prueba
       </p>
     </main>
   );
