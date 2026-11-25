@@ -33,7 +33,6 @@ function createCode() {
   do {
     code = randomInt(10000, 100000).toString();
   } while (rooms.has(code));
-
   return code;
 }
 
@@ -70,15 +69,32 @@ function broadcastState(code) {
   });
 }
 
+function positionPlayers(room) {
+  room.players.forEach(p => {
+    p.x = p.team === "blue" ? 300 : 700;
+    p.y = p.slot % 2 === 0 ? 180 : 420;
+    p.input = { x: 0, y: 0 };
+  });
+}
+
+function resetBall(room) {
+  room.ball = {
+    x: room.serverTeam === "blue" ? 300 : 700,
+    y: 300,
+    vx: 0,
+    vy: 0,
+    moving: false
+  };
+}
+
 function startGame(room, code) {
   if (room.players.length !== 4 || room.started) return;
 
   room.started = true;
+  room.serverTeam = "blue";
 
-  room.players.forEach((p, i) => {
-    p.x = i % 2 === 0 ? 300 : 700;
-    p.y = i < 2 ? 180 : 420;
-  });
+  positionPlayers(room);
+  resetBall(room);
 
   console.log("PARTIDA INICIADA:", code);
 
@@ -90,31 +106,67 @@ function startGame(room, code) {
   broadcastState(code);
 }
 
+function scorePoint(room, code, team) {
+  const index = team === "blue" ? 0 : 1;
+  room.score[index]++;
+
+  console.log("PUNTO:", team, "MARCADOR:", room.score);
+
+  room.serverTeam = team;
+  positionPlayers(room);
+  resetBall(room);
+
+  io.to(code).emit("point-scored", {
+    team,
+    score: room.score
+  });
+
+  broadcastState(code);
+}
+
+function joinPlayer(socket, code) {
+  const room = rooms.get(code);
+  if (!room) return;
+
+  const slot = room.players.length;
+
+  room.players.push({
+    id: socket.id,
+    slot,
+    team: slot < 2 ? "blue" : "red",
+    x: slot < 2 ? 300 : 700,
+    y: slot % 2 === 0 ? 180 : 420,
+    input: { x: 0, y: 0 }
+  });
+
+  socket.join(code);
+  socket.data.roomCode = code;
+
+  console.log("JUGADOR ENTRA:", socket.id, code);
+
+  updateRoom(code);
+}
+
 function leaveRoom(socket) {
   const code = socket.data.roomCode;
   if (!code) return;
 
   const room = rooms.get(code);
 
-  console.log("JUGADOR SALE:", socket.id, "SALA:", code);
+  console.log("JUGADOR SALE:", socket.id, code);
 
   if (room) {
-    room.players = room.players.filter(
-      p => p.id !== socket.id
-    );
+    room.players = room.players.filter(p => p.id !== socket.id);
 
     if (room.players.length === 0) {
       rooms.delete(code);
-      console.log("SALA ELIMINADA:", code);
     } else {
       room.started = false;
-
       room.players.forEach((p, i) => {
         p.slot = i;
         p.team = i < 2 ? "blue" : "red";
         p.input = { x: 0, y: 0 };
       });
-
       updateRoom(code);
     }
   }
@@ -123,43 +175,10 @@ function leaveRoom(socket) {
   socket.data.roomCode = null;
 }
 
-function joinPlayer(socket, code) {
-  const room = rooms.get(code);
-  if (!room) return false;
-
-  const slot = room.players.length;
-
-  room.players.push({
-    id: socket.id,
-    slot,
-    team: slot < 2 ? "blue" : "red",
-    x: slot < 2 ? 250 : 750,
-    y: slot % 2 === 0 ? 180 : 420,
-    input: { x: 0, y: 0 }
-  });
-
-  socket.join(code);
-  socket.data.roomCode = code;
-
-  console.log(
-    "JUGADOR ENTRA:",
-    socket.id,
-    "SALA:",
-    code,
-    "JUGADORES:",
-    room.players.length
-  );
-
-  updateRoom(code);
-  return true;
-}
-
 io.on("connection", socket => {
   console.log("NUEVA CONEXION:", socket.id);
 
   socket.on("create-room", callback => {
-    console.log("SOLICITUD CREAR SALA:", socket.id);
-
     if (socket.data.roomCode) {
       return callback?.({
         ok: false,
@@ -172,8 +191,15 @@ io.on("connection", socket => {
     const room = {
       players: [],
       started: false,
-      ball: { x: 500, y: 300 },
-      score: [0, 0]
+      ball: {
+        x: 300,
+        y: 300,
+        vx: 0,
+        vy: 0,
+        moving: false
+      },
+      score: [0, 0],
+      serverTeam: "blue"
     };
 
     rooms.set(code, room);
@@ -191,12 +217,7 @@ io.on("connection", socket => {
   socket.on("join-room", (data = {}, callback) => {
     const code = String(data.code || "").trim();
 
-    console.log(
-      "SOLICITUD ENTRAR:",
-      socket.id,
-      "CODIGO:",
-      code
-    );
+    console.log("SOLICITUD ENTRAR:", code);
 
     if (!/^\d{5}$/.test(code)) {
       return callback?.({
@@ -215,8 +236,6 @@ io.on("connection", socket => {
     const room = rooms.get(code);
 
     if (!room) {
-      console.log("SALA NO ENCONTRADA:", code);
-
       return callback?.({
         ok: false,
         message: "Sala no encontrada."
@@ -244,15 +263,10 @@ io.on("connection", socket => {
   });
 
   socket.on("player-input", ({ x, y } = {}) => {
-    const code = socket.data.roomCode;
-    const room = rooms.get(code);
-
+    const room = rooms.get(socket.data.roomCode);
     if (!room || !room.started) return;
 
-    const player = room.players.find(
-      p => p.id === socket.id
-    );
-
+    const player = room.players.find(p => p.id === socket.id);
     if (!player) return;
 
     player.input = {
@@ -261,9 +275,46 @@ io.on("connection", socket => {
     };
   });
 
-  socket.on("leave-room", () => {
-    leaveRoom(socket);
+  socket.on("player-hit", (callback) => {
+    const room = rooms.get(socket.data.roomCode);
+
+    if (!room || !room.started) {
+      return callback?.({ ok: false, message: "Partida no iniciada." });
+    }
+
+    const player = room.players.find(p => p.id === socket.id);
+    if (!player) {
+      return callback?.({ ok: false, message: "Jugador no encontrado." });
+    }
+
+    const ball = room.ball;
+    const distance = Math.hypot(ball.x - player.x, ball.y - player.y);
+    const limit = ball.moving ? 90 : 150;
+
+    if (!ball.moving && player.team !== room.serverTeam) {
+      return callback?.({ ok: false, message: "Es el turno de saque de la otra pareja." });
+    }
+
+    if (distance > limit) {
+      return callback?.({ ok: false, message: "Acércate a la pelota para golpearla." });
+    }
+
+    const direction = player.team === "blue" ? 1 : -1;
+
+    ball.vx = direction * 9;
+    ball.vy = Math.max(
+      -6,
+      Math.min(6, (ball.y - player.y) * 0.09 + player.input.y * 2)
+    );
+    ball.moving = true;
+
+    console.log("GOLPE:", player.team, "SALA:", socket.data.roomCode);
+
+    callback?.({ ok: true });
+    broadcastState(socket.data.roomCode);
   });
+
+  socket.on("leave-room", () => leaveRoom(socket));
 
   socket.on("disconnect", reason => {
     console.log("DESCONECTADO:", socket.id, reason);
@@ -276,15 +327,38 @@ setInterval(() => {
     if (!room.started) continue;
 
     for (const player of room.players) {
-      player.x = Math.max(
-        45,
-        Math.min(955, player.x + player.input.x * 4)
-      );
+      player.x = Math.max(45, Math.min(955,
+        player.x + player.input.x * 4
+      ));
 
-      player.y = Math.max(
-        45,
-        Math.min(555, player.y + player.input.y * 4)
-      );
+      player.y = Math.max(45, Math.min(555,
+        player.y + player.input.y * 4
+      ));
+    }
+
+    const ball = room.ball;
+
+    if (ball.moving) {
+      ball.x += ball.vx;
+      ball.y += ball.vy;
+
+      // Rebote en las paredes laterales
+      if (ball.y <= 45) {
+        ball.y = 45;
+        ball.vy = Math.abs(ball.vy);
+      }
+
+      if (ball.y >= 555) {
+        ball.y = 555;
+        ball.vy = -Math.abs(ball.vy);
+      }
+
+      // La pelota sale por el fondo de la pista
+      if (ball.x >= 975) {
+        scorePoint(room, code, "blue");
+      } else if (ball.x <= 25) {
+        scorePoint(room, code, "red");
+      }
     }
 
     broadcastState(code);
