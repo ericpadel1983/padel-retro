@@ -21,7 +21,11 @@ app.get("/", (req, res) => {
 });
 
 app.get("/health", (req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    rooms: rooms.size,
+    connections: io.engine.clientsCount
+  });
 });
 
 function createCode() {
@@ -29,11 +33,12 @@ function createCode() {
   do {
     code = randomInt(10000, 100000).toString();
   } while (rooms.has(code));
+
   return code;
 }
 
 function publicPlayers(room) {
-  return room.players.map((p) => ({
+  return room.players.map(p => ({
     id: p.id,
     slot: p.slot,
     team: p.team,
@@ -54,23 +59,6 @@ function updateRoom(code) {
   });
 }
 
-function startGame(room, code) {
-  if (room.players.length !== 4 || room.started) return;
-
-  room.started = true;
-  room.players.forEach((p, i) => {
-    p.x = i % 2 === 0 ? 300 : 700;
-    p.y = i < 2 ? 180 : 420;
-  });
-
-  io.to(code).emit("game-start", {
-    message: "Partida iniciada!"
-  });
-
-  updateRoom(code);
-  broadcastState(code);
-}
-
 function broadcastState(code) {
   const room = rooms.get(code);
   if (!room) return;
@@ -82,8 +70,103 @@ function broadcastState(code) {
   });
 }
 
-io.on("connection", (socket) => {
-  socket.on("create-room", (callback) => {
+function startGame(room, code) {
+  if (room.players.length !== 4 || room.started) return;
+
+  room.started = true;
+
+  room.players.forEach((p, i) => {
+    p.x = i % 2 === 0 ? 300 : 700;
+    p.y = i < 2 ? 180 : 420;
+  });
+
+  console.log("PARTIDA INICIADA:", code);
+
+  io.to(code).emit("game-start", {
+    message: "Partida iniciada!"
+  });
+
+  updateRoom(code);
+  broadcastState(code);
+}
+
+function leaveRoom(socket) {
+  const code = socket.data.roomCode;
+  if (!code) return;
+
+  const room = rooms.get(code);
+
+  console.log("JUGADOR SALE:", socket.id, "SALA:", code);
+
+  if (room) {
+    room.players = room.players.filter(
+      p => p.id !== socket.id
+    );
+
+    if (room.players.length === 0) {
+      rooms.delete(code);
+      console.log("SALA ELIMINADA:", code);
+    } else {
+      room.started = false;
+
+      room.players.forEach((p, i) => {
+        p.slot = i;
+        p.team = i < 2 ? "blue" : "red";
+        p.input = { x: 0, y: 0 };
+      });
+
+      updateRoom(code);
+    }
+  }
+
+  socket.leave(code);
+  socket.data.roomCode = null;
+}
+
+function joinPlayer(socket, code) {
+  const room = rooms.get(code);
+  if (!room) return false;
+
+  const slot = room.players.length;
+
+  room.players.push({
+    id: socket.id,
+    slot,
+    team: slot < 2 ? "blue" : "red",
+    x: slot < 2 ? 250 : 750,
+    y: slot % 2 === 0 ? 180 : 420,
+    input: { x: 0, y: 0 }
+  });
+
+  socket.join(code);
+  socket.data.roomCode = code;
+
+  console.log(
+    "JUGADOR ENTRA:",
+    socket.id,
+    "SALA:",
+    code,
+    "JUGADORES:",
+    room.players.length
+  );
+
+  updateRoom(code);
+  return true;
+}
+
+io.on("connection", socket => {
+  console.log("NUEVA CONEXION:", socket.id);
+
+  socket.on("create-room", callback => {
+    console.log("SOLICITUD CREAR SALA:", socket.id);
+
+    if (socket.data.roomCode) {
+      return callback?.({
+        ok: false,
+        message: "Ya estás en una sala."
+      });
+    }
+
     const code = createCode();
 
     const room = {
@@ -96,6 +179,8 @@ io.on("connection", (socket) => {
     rooms.set(code, room);
     joinPlayer(socket, code);
 
+    console.log("SALA CREADA:", code);
+
     callback?.({
       ok: true,
       code,
@@ -103,10 +188,35 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("join-room", ({ code } = {}, callback) => {
+  socket.on("join-room", (data = {}, callback) => {
+    const code = String(data.code || "").trim();
+
+    console.log(
+      "SOLICITUD ENTRAR:",
+      socket.id,
+      "CODIGO:",
+      code
+    );
+
+    if (!/^\d{5}$/.test(code)) {
+      return callback?.({
+        ok: false,
+        message: "El código debe tener 5 dígitos."
+      });
+    }
+
+    if (socket.data.roomCode) {
+      return callback?.({
+        ok: false,
+        message: "Ya estás en otra sala."
+      });
+    }
+
     const room = rooms.get(code);
 
     if (!room) {
+      console.log("SALA NO ENCONTRADA:", code);
+
       return callback?.({
         ok: false,
         message: "Sala no encontrada."
@@ -133,33 +243,16 @@ io.on("connection", (socket) => {
     }
   });
 
-  function joinPlayer(socket, code) {
-    const room = rooms.get(code);
-    if (!room) return;
-
-    const slot = room.players.length;
-
-    room.players.push({
-      id: socket.id,
-      slot,
-      team: slot < 2 ? "blue" : "red",
-      x: slot < 2 ? 250 : 750,
-      y: slot % 2 === 0 ? 180 : 420,
-      input: { x: 0, y: 0 }
-    });
-
-    socket.join(code);
-    socket.data.roomCode = code;
-
-    updateRoom(code);
-  }
-
   socket.on("player-input", ({ x, y } = {}) => {
     const code = socket.data.roomCode;
     const room = rooms.get(code);
+
     if (!room || !room.started) return;
 
-    const player = room.players.find((p) => p.id === socket.id);
+    const player = room.players.find(
+      p => p.id === socket.id
+    );
+
     if (!player) return;
 
     player.input = {
@@ -172,50 +265,26 @@ io.on("connection", (socket) => {
     leaveRoom(socket);
   });
 
-  socket.on("disconnect", () => {
+  socket.on("disconnect", reason => {
+    console.log("DESCONECTADO:", socket.id, reason);
     leaveRoom(socket);
   });
 });
-
-function leaveRoom(socket) {
-  const code = socket.data.roomCode;
-  if (!code) return;
-
-  const room = rooms.get(code);
-  if (room) {
-    room.players = room.players.filter(
-      (p) => p.id !== socket.id
-    );
-
-    if (room.players.length === 0) {
-      rooms.delete(code);
-    } else {
-      room.started = false;
-      room.players.forEach((p, i) => {
-        p.slot = i;
-        p.team = i < 2 ? "blue" : "red";
-        p.input = { x: 0, y: 0 };
-      });
-      updateRoom(code);
-    }
-  }
-
-  socket.leave(code);
-  socket.data.roomCode = null;
-}
 
 setInterval(() => {
   for (const [code, room] of rooms) {
     if (!room.started) continue;
 
     for (const player of room.players) {
-      player.x = Math.max(45, Math.min(955,
-        player.x + player.input.x * 4
-      ));
+      player.x = Math.max(
+        45,
+        Math.min(955, player.x + player.input.x * 4)
+      );
 
-      player.y = Math.max(45, Math.min(555,
-        player.y + player.input.y * 4
-      ));
+      player.y = Math.max(
+        45,
+        Math.min(555, player.y + player.input.y * 4)
+      );
     }
 
     broadcastState(code);
@@ -225,5 +294,5 @@ setInterval(() => {
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Servidor activo en puerto ${PORT}`);
+  console.log("SERVIDOR ACTIVO EN PUERTO:", PORT);
 });
